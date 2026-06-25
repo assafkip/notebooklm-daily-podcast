@@ -1,0 +1,4 @@
+{
+  "_README": "Only needed if config.json delivery = 'resend'. Copy to supabase.json and set your project ref, OR set SUPABASE_PROJECT_REF in .env instead. Non-secret. The access token (PAT) goes in .env as SUPABASE_ACCESS_TOKEN.",
+  "project_ref": "your-supabase-project-ref"
+}

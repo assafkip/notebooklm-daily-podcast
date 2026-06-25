@@ -1,0 +1,22 @@
+# Secrets + local config
+.env
+config.json
+
+# Runtime output (each run regenerates these)
+episodes/
+work/
+logs/
+digests/
+*.m4a
+covered-log.jsonl
+feed-episodes.jsonl
+feed.xml
+cover.png
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+supabase.json
+sources.json

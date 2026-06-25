@@ -1,0 +1,20 @@
+{
+  "_README": "Copy this to config.json and make it yours. Every user-specific knob lives here so you never edit the code. show_name + audience + host_persona drive what the episode is about; the rest only matters once you turn delivery on.",
+
+  "show_name": "AI News Daily",
+  "host_persona": "a sharp curator of new AI-coding tools and agentic workflows",
+  "audience": "AI builders, developers, and startup founders who want tools they can install today",
+  "forbidden_terms": [],
+
+  "curate_count": "4 to 5",
+  "window_hours": 48,
+  "episode_length": "short",
+  "episode_format": "brief",
+
+  "_delivery_README": "none = build the .m4a and stop (default, zero setup). resend = also upload + email subscribers (needs Supabase + Resend, see README).",
+  "delivery": "none",
+  "owner_name": "Your Name",
+  "owner_email": "you@example.com",
+  "show_link": "https://example.com",
+  "output_dir": "episodes"
+}

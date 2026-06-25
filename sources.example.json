@@ -1,0 +1,139 @@
+{
+  "_README": "Your source list. Copy to sources.json and edit. Each entry: enabled, type, name, weight (base rank score), cap (max items kept). Types: hackernews | reddit | rss | lobsters | huggingface | github_trending | apify_x | reddit_apify | anthropic. apify_x and reddit_apify need APIFY_TOKEN in .env or they are skipped silently. The set below is a working default for an AI-tools/agentic-coding show; swap in your own.",
+  "window_hours": 48,
+  "pool_size": 30,
+  "default_cap": 5,
+  "sources": [
+    {
+      "enabled": true,
+      "type": "hackernews",
+      "name": "hn-tools",
+      "weight": 7,
+      "cap": 6,
+      "query": "Claude Code OR MCP OR AI agent OR Show HN",
+      "min_points": 15
+    },
+    {
+      "enabled": true,
+      "type": "anthropic",
+      "name": "anthropic",
+      "weight": 8,
+      "cap": 3,
+      "max_items": 6
+    },
+    {
+      "enabled": true,
+      "type": "rss",
+      "name": "openai",
+      "weight": 5,
+      "cap": 2,
+      "url": "https://openai.com/news/rss.xml"
+    },
+    {
+      "enabled": true,
+      "type": "rss",
+      "name": "gh-browser-use",
+      "weight": 7,
+      "cap": 2,
+      "url": "https://github.com/browser-use/browser-use/releases.atom"
+    },
+    {
+      "enabled": true,
+      "type": "rss",
+      "name": "gh-video-use",
+      "weight": 7,
+      "cap": 2,
+      "url": "https://github.com/browser-use/video-use/releases.atom"
+    },
+    {
+      "enabled": true,
+      "type": "rss",
+      "name": "gh-hindsight",
+      "weight": 6,
+      "cap": 2,
+      "url": "https://github.com/vectorize-io/hindsight/releases.atom"
+    },
+    {
+      "enabled": true,
+      "type": "lobsters",
+      "name": "lobsters",
+      "weight": 4,
+      "cap": 3
+    },
+    {
+      "enabled": true,
+      "type": "huggingface",
+      "name": "hf-trending-models",
+      "weight": 5,
+      "cap": 3
+    },
+    {
+      "enabled": true,
+      "type": "reddit_apify",
+      "name": "reddit-tools",
+      "weight": 5,
+      "cap": 4,
+      "per_sub": 6,
+      "max_items": 24,
+      "timeout": 280,
+      "rotate": 2,
+      "subreddits": [
+        "ClaudeCode",
+        "mcp",
+        "ClaudeAI",
+        "LocalLLaMA"
+      ]
+    },
+    {
+      "enabled": false,
+      "type": "rss",
+      "name": "google-ai",
+      "weight": 7,
+      "cap": 3,
+      "url": "https://blog.google/technology/ai/rss/"
+    },
+    {
+      "enabled": false,
+      "type": "rss",
+      "name": "the-hacker-news",
+      "weight": 6,
+      "cap": 3,
+      "url": "https://feeds.feedburner.com/TheHackersNews"
+    },
+    {
+      "enabled": false,
+      "type": "rss",
+      "name": "arxiv-cs-ai",
+      "weight": 5,
+      "cap": 2,
+      "url": "http://export.arxiv.org/rss/cs.AI"
+    },
+    {
+      "enabled": false,
+      "type": "github_trending",
+      "name": "github-daily",
+      "weight": 5,
+      "cap": 3,
+      "since": "daily"
+    },
+    {
+      "enabled": true,
+      "type": "apify_x",
+      "name": "x-makers",
+      "weight": 6,
+      "cap": 6,
+      "days_back": 2,
+      "max_items": 80,
+      "twitter_handles": [
+        "bcherny",
+        "trq212",
+        "leerob",
+        "ericzakariasson",
+        "gregpr07",
+        "simonw",
+        "AnjneyMidha",
+        "AIHighlight"
+      ]
+    }
+  ]
+}
