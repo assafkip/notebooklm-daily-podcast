@@ -36,6 +36,8 @@ from email.utils import parsedate_to_datetime
 from xml.etree import ElementTree
 
 USER_AGENT = "notebooklm-daily-podcast/1.0 (+https://github.com)"
+ARCTIC_BASE = "https://arctic-shift.photon-reddit.com"
+PULLPUSH_BASE = "https://api.pullpush.io"
 HTTP_TIMEOUT = 20
 
 
@@ -181,17 +183,66 @@ def fetch_hackernews(src):
 
 
 def fetch_reddit(src):
-    data = _get_json(f"https://www.reddit.com/r/{src['subreddit']}/hot.json?limit=25")
+    subs = _reddit_subreddits(src)
+    if not subs:
+        return []
+    return _fetch_reddit_archive(src, subs)
+
+
+def _reddit_subreddits(src):
+    subs = src.get("subreddits")
+    if not subs and src.get("subreddit"):
+        subs = [src["subreddit"]]
+    return [s.lstrip("/").removeprefix("r/").strip() for s in (subs or []) if str(s).strip()]
+
+
+def _rotate_subs(subs, rotate):
+    if not rotate or rotate >= len(subs):
+        return subs
+    offset = datetime.now(timezone.utc).date().toordinal()
+    return [subs[(offset + i) % len(subs)] for i in range(rotate)]
+
+
+def _fetch_reddit_archive(src, subs):
+    subs = _rotate_subs(subs, src.get("rotate"))
+    limit = int(src.get("posts_per_sub") or src.get("per_sub") or src.get("limit") or 25)
+    lookback_days = int(src.get("lookback_days") or 35)
+    after = (datetime.now(timezone.utc) - timedelta(days=lookback_days)).date().isoformat()
     out = []
-    for child in data.get("data", {}).get("children", []):
-        d = child.get("data", {})
-        if d.get("stickied"):
-            continue
-        link = d.get("url_overridden_by_dest") or d.get("url") or \
-            f"https://reddit.com{d.get('permalink', '')}"
-        out.append(normalize(d.get("title"), link, src["name"], d.get("selftext"),
-                             d.get("created_utc"), d.get("score")))
+    for sub in subs:
+        for item in _reddit_archive_items(sub, after, limit):
+            title = (item.get("title") or "").strip()
+            if not title or item.get("stickied"):
+                continue
+            permalink = item.get("permalink") or ""
+            link = f"https://www.reddit.com{permalink}" if permalink else item.get("url", "")
+            out.append(normalize(title, link, src["name"], item.get("selftext"),
+                                 item.get("created_utc"), item.get("score") or item.get("ups")))
     return out
+
+
+def _reddit_archive_items(subreddit, after, limit):
+    try:
+        return _archive_items(_get_json(_arctic_posts_url(subreddit, after, limit)))
+    except Exception:
+        return _archive_items(_get_json(_pullpush_posts_url(subreddit, limit)))
+
+
+def _archive_items(payload):
+    if isinstance(payload, dict):
+        data = payload.get("data", [])
+        return data if isinstance(data, list) else []
+    return payload if isinstance(payload, list) else []
+
+
+def _arctic_posts_url(subreddit, after, limit):
+    query = urllib.parse.urlencode({"subreddit": subreddit, "after": after, "limit": limit, "sort": "desc"})
+    return f"{ARCTIC_BASE}/api/posts/search?{query}"
+
+
+def _pullpush_posts_url(subreddit, limit):
+    query = urllib.parse.urlencode({"subreddit": subreddit, "size": limit, "sort": "desc"})
+    return f"{PULLPUSH_BASE}/reddit/search/submission?{query}"
 
 
 def fetch_rss(src):
@@ -310,61 +361,15 @@ def fetch_apify_x(src):
 
 
 def fetch_reddit_apify(src):
-    """Reddit via Apify actor trudax/reddit-scraper-lite. Gated on APIFY_TOKEN.
+    """Backward-compatible source type.
 
-    Direct Reddit HTTP is IP-blocked off residential IPs (403); this actor routes
-    through an Apify residential proxy, which is the reliable headless path. The
-    reddit MCP can't run in the launchd cron, so Apify is how Reddit gets in.
+    The old Apify actor path timed out or required proxy credentials. Keep the
+    config key working, but route it through Arctic Shift with PullPush fallback.
     """
-    import os
-    token = os.environ.get("APIFY_TOKEN")
-    if not token:
-        print(f"  skip {src['name']}: APIFY_TOKEN not set", file=sys.stderr)
-        return []
-    subs = [s.lstrip("/").removeprefix("r/").strip() for s in src.get("subreddits", [])]
+    subs = _reddit_subreddits(src)
     if not subs:
         return []
-    # The real cap is the 280s run timeout (~60-90s/sub via the residential proxy),
-    # so we can only scrape a couple subs per run. With more than `rotate` subs,
-    # pick a date-rotating window of `rotate` so every sub is covered over a few
-    # days without blowing the timeout; the dedup ledger makes day-to-day repeats
-    # harmless.
-    rotate = src.get("rotate")
-    if rotate and rotate < len(subs):
-        from datetime import date
-        offset = date.today().toordinal()
-        subs = [subs[(offset + i) % len(subs)] for i in range(rotate)]
-    actor_input = {
-        "startUrls": [{"url": f"https://www.reddit.com/r/{s}/hot/"} for s in subs],
-        "skipComments": True, "skipUserPosts": True, "skipCommunity": True,
-        "includeMediaLinks": True, "sort": "hot",
-        "maxItems": src.get("max_items", 30),
-        "maxPostCount": src.get("per_sub", 6),
-        "scrollTimeout": 15,
-        "proxy": {"useApifyProxy": True, "apifyProxyGroups": ["RESIDENTIAL"]},
-    }
-    url = ("https://api.apify.com/v2/acts/trudax~reddit-scraper-lite/"
-           f"run-sync-get-dataset-items?token={token}")
-    req = urllib.request.Request(url, data=json.dumps(actor_input).encode(),
-                                 headers={"Content-Type": "application/json",
-                                          "User-Agent": USER_AGENT})
-    with urllib.request.urlopen(req, timeout=src.get("timeout", 240)) as resp:
-        records = json.loads(resp.read().decode("utf-8", "replace"))
-
-    out = []
-    for r in records:
-        if r.get("dataType") not in (None, "post"):
-            continue
-        title = (r.get("title") or "").strip()
-        link = r.get("url") or r.get("link") or ""
-        if not title or not link:
-            continue
-        score = r.get("upVotes") or r.get("numberOfComments") or r.get("score") or 0
-        when = r.get("createdAt") or r.get("created") or r.get("postedDate") or ""
-        body = r.get("body") or r.get("text") or ""
-        community = r.get("communityName") or r.get("parsedCommunityName") or src["name"]
-        out.append(normalize(title, link, src["name"], f"[{community}] {body}", when, score))
-    return out
+    return _fetch_reddit_archive(src, subs)
 
 
 def fetch_anthropic(src):
@@ -528,6 +533,49 @@ def cmd_selftest(_args):
     if parse_ts("Mon, 23 Jun 2026 10:00:00 GMT") is None:
         print("FAIL: RFC822 date did not parse", file=sys.stderr)
         ok = False
+
+    original_get_json = globals()["_get_json"]
+    requested_urls = []
+
+    def fake_get_json(url, headers=None):
+        requested_urls.append(url)
+        if "arctic-shift.photon-reddit.com/api/posts/search" in url:
+            raise RuntimeError("arctic blocked")
+        if "api.pullpush.io/reddit/search/submission" not in url:
+            raise AssertionError(f"unexpected Reddit URL: {url}")
+        return {
+            "data": [
+                {
+                    "id": "rd1",
+                    "subreddit": "ClaudeCode",
+                    "author": "builder",
+                    "title": "MCP eval harness launch",
+                    "selftext": "New agent eval harness pattern.",
+                    "permalink": "/r/ClaudeCode/comments/rd1/mcp_eval_harness/",
+                    "score": 42,
+                    "num_comments": 7,
+                    "created_utc": now,
+                }
+            ]
+        }
+
+    try:
+        globals()["_get_json"] = fake_get_json
+        reddit_items = fetch_reddit({"name": "reddit-tools", "subreddit": "ClaudeCode", "limit": 2})
+        if not reddit_items or reddit_items[0]["title"] != "MCP eval harness launch":
+            print("FAIL: Reddit Arctic/PullPush collector returned no normalized items", file=sys.stderr)
+            ok = False
+        if not requested_urls or "arctic-shift.photon-reddit.com/api/posts/search" not in requested_urls[0]:
+            print("FAIL: Reddit collector did not try Arctic Shift first", file=sys.stderr)
+            ok = False
+        if len(requested_urls) < 2 or "api.pullpush.io/reddit/search/submission" not in requested_urls[1]:
+            print("FAIL: Reddit collector did not fall back to PullPush", file=sys.stderr)
+            ok = False
+    except Exception as exc:
+        print(f"FAIL: Reddit Arctic/PullPush selftest failed: {exc}", file=sys.stderr)
+        ok = False
+    finally:
+        globals()["_get_json"] = original_get_json
 
     print("PASS" if ok else "FAILED", file=sys.stderr)
     return 0 if ok else 1
