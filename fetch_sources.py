@@ -31,6 +31,7 @@ import re
 import sys
 import urllib.parse
 import urllib.request
+import urllib.error
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from xml.etree import ElementTree
@@ -253,6 +254,130 @@ def fetch_github_trending(src):
     return out
 
 
+def _github_search_headers():
+    import os
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    token = os.environ.get("GITHUB_TOKEN")
+    if token and token.startswith(("ghp_", "github_pat_")):
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
+def _github_search_json(url, headers):
+    try:
+        return _get_json(url, headers=headers)
+    except urllib.error.HTTPError as exc:
+        if exc.code == 401 and headers.get("Authorization"):
+            print("  warn github_search: GITHUB_TOKEN rejected; retrying unauthenticated", file=sys.stderr)
+            return _get_json(url, headers={k: v for k, v in headers.items() if k != "Authorization"})
+        raise
+
+
+def _github_search_query(term, min_stars, since_created, since_pushed):
+    return (
+        f"{term} in:name,description,readme "
+        f"stars:>={min_stars} created:>={since_created} pushed:>={since_pushed} "
+        "fork:false archived:false"
+    )
+
+
+def _github_repo_item(repo, source_name):
+    full_name = repo.get("full_name") or ""
+    stars = int(repo.get("stargazers_count") or 0)
+    language = repo.get("language") or "unknown"
+    pushed_at = repo.get("pushed_at") or ""
+    description = repo.get("description") or ""
+    summary = f"{description} Language: {language}. Stars: {stars}. Pushed: {pushed_at}."
+    return normalize(
+        f"GitHub repo: {full_name} ({stars:,} stars)",
+        repo.get("html_url"),
+        source_name,
+        summary,
+        pushed_at,
+        stars,
+    )
+
+
+GITHUB_DEFAULT_INCLUDE_TERMS = (
+    "agent", "ai agent", "claude code", "codex", "mcp", "llm", "coding",
+    "workflow", "memory", "tool", "skills", "orchestration", "design", "brain",
+)
+GITHUB_DEFAULT_EXCLUDE_TERMS = (
+    "stock", "stocks", "trading", "crypto", "finance", "financial",
+    "market analysis", "investment", "forex",
+)
+
+
+def _github_repo_text(repo):
+    bits = [
+        repo.get("full_name") or "",
+        repo.get("name") or "",
+        repo.get("description") or "",
+        " ".join(repo.get("topics") or []),
+        repo.get("language") or "",
+    ]
+    return " ".join(bits).lower()
+
+
+def _github_term_present(term, text):
+    term = term.lower().strip()
+    if not term:
+        return False
+    if re.search(r"\W", term):
+        return term in text
+    return re.search(rf"(?<![a-z0-9]){re.escape(term)}(?![a-z0-9])", text) is not None
+
+
+def _github_repo_in_scope(repo, src):
+    text = _github_repo_text(repo)
+    exclude_terms = src.get("exclude_terms") or GITHUB_DEFAULT_EXCLUDE_TERMS
+    if any(_github_term_present(term, text) for term in exclude_terms):
+        return False
+    include_terms = src.get("include_terms") or GITHUB_DEFAULT_INCLUDE_TERMS
+    return any(_github_term_present(term, text) for term in include_terms)
+
+
+def fetch_github_search(src):
+    """GitHub REST search for high-star repos with fresh push activity.
+
+    This restores broad repo discovery without the old github_trending scrape.
+    Search results include stargazers_count and pushed_at, so popularity and the
+    existing 48h freshness gate both stay deterministic. Runs keyless: a
+    GITHUB_TOKEN raises the rate limit but is not required.
+    """
+    min_stars = int(src.get("min_stars", 100))
+    max_age_days = int(src.get("max_age_days", 180))
+    max_items = min(int(src.get("max_items", 20)), 100)
+    since_created = (datetime.now(timezone.utc) - timedelta(days=max_age_days)).strftime("%Y-%m-%d")
+    since_pushed = (datetime.now(timezone.utc) - timedelta(hours=48)).strftime("%Y-%m-%d")
+    headers = _github_search_headers()
+    out = []
+    seen = set()
+
+    for term in src.get("queries", []):
+        query = _github_search_query(term, min_stars, since_created, since_pushed)
+        url = "https://api.github.com/search/repositories?" + urllib.parse.urlencode({
+            "q": query,
+            "sort": "stars",
+            "order": "desc",
+            "per_page": max_items,
+        })
+        data = _github_search_json(url, headers)
+        for repo in data.get("items", []):
+            full_name = repo.get("full_name")
+            html_url = repo.get("html_url")
+            if not full_name or not html_url or full_name in seen:
+                continue
+            if not _github_repo_in_scope(repo, src):
+                continue
+            seen.add(full_name)
+            out.append(_github_repo_item(repo, src["name"]))
+    return out
+
+
 def fetch_apify_x(src):
     """X/Twitter via Apify actor apidojo/tweet-scraper. Gated on APIFY_TOKEN.
 
@@ -408,6 +533,7 @@ FETCHERS = {
     "lobsters": fetch_lobsters,
     "huggingface": fetch_huggingface,
     "github_trending": fetch_github_trending,
+    "github_search": fetch_github_search,
     "apify_x": fetch_apify_x,
 }
 
@@ -528,6 +654,46 @@ def cmd_selftest(_args):
     if parse_ts("Mon, 23 Jun 2026 10:00:00 GMT") is None:
         print("FAIL: RFC822 date did not parse", file=sys.stderr)
         ok = False
+
+    # github_search: keyless call, scope filter keeps on-topic + drops off-topic,
+    # and pushed_at flows through normalize as a real date. Fully offline.
+    original_get_json = globals()["_get_json"]
+    gh_urls = []
+
+    def fake_github_json(url, headers=None):
+        gh_urls.append((url, dict(headers or {})))
+        return {"items": [
+            {"full_name": "acme/agent-kit", "name": "agent-kit",
+             "html_url": "https://github.com/acme/agent-kit", "stargazers_count": 4200,
+             "language": "Python", "description": "An AI agent framework with MCP support.",
+             "topics": ["ai", "agent", "mcp"], "pushed_at": "2026-06-23T10:00:00Z"},
+            {"full_name": "acme/forex-bot", "name": "forex-bot",
+             "html_url": "https://github.com/acme/forex-bot", "stargazers_count": 9000,
+             "language": "Python", "description": "Crypto trading and forex market analysis.",
+             "topics": ["trading", "forex"], "pushed_at": "2026-06-23T10:00:00Z"},
+        ]}
+
+    try:
+        globals()["_get_json"] = fake_github_json
+        gh_items = fetch_github_search({"name": "gh", "queries": ["ai agent"]})
+        titles = [it["title"] for it in gh_items]
+        if not any("acme/agent-kit" in t for t in titles):
+            print("FAIL: github_search dropped an on-topic repo", file=sys.stderr)
+            ok = False
+        if any("acme/forex-bot" in t for t in titles):
+            print("FAIL: github_search kept an excluded (trading/forex) repo", file=sys.stderr)
+            ok = False
+        if gh_items and within_window(gh_items, parse_ts("2026-06-23T11:00:00Z"), 48) == []:
+            print("FAIL: github_search item has no parseable date for the window", file=sys.stderr)
+            ok = False
+        if gh_urls and "Authorization" in gh_urls[0][1]:
+            print("FAIL: github_search sent auth header without a token", file=sys.stderr)
+            ok = False
+    except Exception as exc:
+        print(f"FAIL: github_search selftest raised: {exc}", file=sys.stderr)
+        ok = False
+    finally:
+        globals()["_get_json"] = original_get_json
 
     print("PASS" if ok else "FAILED", file=sys.stderr)
     return 0 if ok else 1
