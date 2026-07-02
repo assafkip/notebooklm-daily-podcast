@@ -1,5 +1,5 @@
 {
-  "_README": "Your source list. Copy to sources.json and edit. Each entry: enabled, type, name, weight (base rank score), cap (max items kept). Types: hackernews | reddit | rss | lobsters | huggingface | github_trending | apify_x | reddit_apify | anthropic. apify_x and reddit_apify need APIFY_TOKEN in .env or they are skipped silently. The set below is a working default for an AI-tools/agentic-coding show; swap in your own.",
+  "_README": "Your source list. Copy to sources.json and edit. Each entry: enabled, type, name, weight (base rank score), cap (max items kept). Types: hackernews | reddit | rss | lobsters | huggingface | github_trending | github_search | apify_x | reddit_apify | anthropic. apify_x and reddit_apify need APIFY_TOKEN in .env or they are skipped silently. github_search is keyless (a GITHUB_TOKEN in .env just raises the rate limit). Prefer github_search over github_trending: Search returns pushed_at, so items carry a real date and survive the 48h freshness window; the trending scrape is undated and gets dropped. The set below is a working default for an AI-tools/agentic-coding show; swap in your own.",
   "window_hours": 48,
   "pool_size": 30,
   "default_cap": 5,
@@ -115,6 +115,23 @@
       "weight": 5,
       "cap": 3,
       "since": "daily"
+    },
+    {
+      "enabled": true,
+      "type": "github_search",
+      "name": "github-breakout-repos",
+      "weight": 8,
+      "cap": 4,
+      "min_stars": 100,
+      "max_age_days": 180,
+      "max_items": 20,
+      "queries": [
+        "ai agent",
+        "mcp server",
+        "claude code",
+        "agentic coding",
+        "llm tool"
+      ]
     },
     {
       "enabled": true,
