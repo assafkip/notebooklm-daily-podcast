@@ -29,7 +29,8 @@ opt-in, so your first run needs zero hosting and zero subscriber list.
 - **NotebookLM CLI** (`nlm`, from notebooklm-mcp-cli) logged into a Google
   account. This is the audio engine.
 - *(optional, for delivery)* a Supabase project + a Resend account.
-- *(optional, for extra sources)* an Apify token for X/Twitter and some subreddits.
+- *(optional, for extra sources)* an Apify token for X/Twitter. Reddit needs no
+  token: it reads the free Arctic Shift archive mirror.
 
 ## Setup (about 10 minutes)
 
@@ -68,9 +69,18 @@ working. Wire delivery only once you want it.
 ## Choose your sources: `sources.json`
 
 One JSON entry per source. Types: `hackernews`, `reddit`, `rss`, `lobsters`,
-`huggingface`, `github_trending`, `anthropic`, plus `apify_x` (X/Twitter handles)
-and `reddit_apify` (needs `APIFY_TOKEN`). A dead source skips silently; it never
-blanks a run. The shipped default targets new AI-coding tools and agentic
+`huggingface`, `github_trending`, `anthropic`, plus `apify_x` (X/Twitter handles).
+`reddit_apify` still works as a source name and is now an alias for `reddit`:
+both read the same free mirror, so the old config keeps running and the Apify
+token it used to need is no longer used for Reddit.
+
+Reddit goes through **Arctic Shift**, a free archive mirror, with PullPush as a
+fallback. No token, no login, no rate-limit dance. That replaced two earlier
+paths that both stopped working: `www.reddit.com/r/<sub>/hot.json`, which returns
+403 from a datacenter IP, and a paid Apify actor behind a residential proxy that
+cost roughly 60 to 90 seconds per subreddit.
+
+A dead source skips silently; it never blanks a run. The shipped default targets new AI-coding tools and agentic
 workflows. Swap in feeds for your topic.
 
 ## Turning on delivery (optional)
