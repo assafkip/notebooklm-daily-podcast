@@ -181,17 +181,31 @@ def fetch_hackernews(src):
     return out
 
 
+
+# THE TRANSPORT IS VENDORED, not imported from the fleet. This repository is
+# published standalone, so a fresh clone has no plugins/ directory: importing a
+# shared module from one would crash for everyone who cloned it. See
+# reddit_arctic.py for the full note.
+import reddit_arctic as _ARCTIC
+
+
 def fetch_reddit(src):
-    data = _get_json(f"https://www.reddit.com/r/{src['subreddit']}/hot.json?limit=25")
+    """One room through the Arctic Shift mirror.
+
+    This read `www.reddit.com/r/<sub>/hot.json?limit=25` directly. That endpoint
+    403s from datacenter IPs and throttles from everywhere else, which is why a
+    second Apify arm existed below to route around it. Both are the same fetch
+    now. `stickied` filtering is dropped because the mirror sorts by recency and
+    does not mark them; a pinned post arriving as a normal recent post is the
+    honest shape of the room.
+    """
+    per_sub = int(src.get("limit") or 25)
+    posts = _ARCTIC.recent(src["subreddit"], max_items=per_sub)
     out = []
-    for child in data.get("data", {}).get("children", []):
-        d = child.get("data", {})
-        if d.get("stickied"):
-            continue
-        link = d.get("url_overridden_by_dest") or d.get("url") or \
-            f"https://reddit.com{d.get('permalink', '')}"
-        out.append(normalize(d.get("title"), link, src["name"], d.get("selftext"),
-                             d.get("created_utc"), d.get("score")))
+    for post in posts:
+        out.append(normalize(post.get("title"), post.get("url") or "",
+                             src["name"], post.get("body") or "",
+                             post.get("created"), post.get("score")))
     return out
 
 
@@ -435,62 +449,26 @@ def fetch_apify_x(src):
 
 
 def fetch_reddit_apify(src):
-    """Reddit via Apify actor trudax/reddit-scraper-lite. Gated on APIFY_TOKEN.
+    """The `reddit_apify` source type, now served by the mirror. Same fetch as
+    `fetch_reddit`; two config names, one transport.
 
-    Direct Reddit HTTP is IP-blocked off residential IPs (403); this actor routes
-    through an Apify residential proxy, which is the reliable headless path. The
-    reddit MCP can't run in the launchd cron, so Apify is how Reddit gets in.
+    APIFY IS RETIRED FOR REDDIT. This paid actor `trudax/reddit-scraper-lite`
+    through a residential proxy because direct Reddit HTTP 403s from a datacenter
+    IP. The mirror is free, needs no proxy and no token, so the APIFY_TOKEN gate
+    goes with the actor rather than staying behind returning [] on any machine
+    where the variable is unset.
     """
-    import os
-    token = os.environ.get("APIFY_TOKEN")
-    if not token:
-        print(f"  skip {src['name']}: APIFY_TOKEN not set", file=sys.stderr)
-        return []
-    subs = [s.lstrip("/").removeprefix("r/").strip() for s in src.get("subreddits", [])]
-    if not subs:
-        return []
-    # The real cap is the 280s run timeout (~60-90s/sub via the residential proxy),
-    # so we can only scrape a couple subs per run. With more than `rotate` subs,
-    # pick a date-rotating window of `rotate` so every sub is covered over a few
-    # days without blowing the timeout; the dedup ledger makes day-to-day repeats
-    # harmless.
-    rotate = src.get("rotate")
-    if rotate and rotate < len(subs):
-        from datetime import date
-        offset = date.today().toordinal()
-        subs = [subs[(offset + i) % len(subs)] for i in range(rotate)]
-    actor_input = {
-        "startUrls": [{"url": f"https://www.reddit.com/r/{s}/hot/"} for s in subs],
-        "skipComments": True, "skipUserPosts": True, "skipCommunity": True,
-        "includeMediaLinks": True, "sort": "hot",
-        "maxItems": src.get("max_items", 30),
-        "maxPostCount": src.get("per_sub", 6),
-        "scrollTimeout": 15,
-        "proxy": {"useApifyProxy": True, "apifyProxyGroups": ["RESIDENTIAL"]},
-    }
-    url = ("https://api.apify.com/v2/acts/trudax~reddit-scraper-lite/"
-           f"run-sync-get-dataset-items?token={token}")
-    req = urllib.request.Request(url, data=json.dumps(actor_input).encode(),
-                                 headers={"Content-Type": "application/json",
-                                          "User-Agent": USER_AGENT})
-    with urllib.request.urlopen(req, timeout=src.get("timeout", 240)) as resp:
-        records = json.loads(resp.read().decode("utf-8", "replace"))
-
+    subs = [s.lstrip("/").removeprefix("r/").strip()
+            for s in src.get("subreddits", []) or [src.get("subreddit", "")]]
+    subs = [s for s in subs if s]
     out = []
-    for r in records:
-        if r.get("dataType") not in (None, "post"):
-            continue
-        title = (r.get("title") or "").strip()
-        link = r.get("url") or r.get("link") or ""
-        if not title or not link:
-            continue
-        score = r.get("upVotes") or r.get("numberOfComments") or r.get("score") or 0
-        when = r.get("createdAt") or r.get("created") or r.get("postedDate") or ""
-        body = r.get("body") or r.get("text") or ""
-        community = r.get("communityName") or r.get("parsedCommunityName") or src["name"]
-        out.append(normalize(title, link, src["name"], f"[{community}] {body}", when, score))
+    for sub in subs:
+        try:
+            out.extend(fetch_reddit({**src, "subreddit": sub}))
+        except _ARCTIC.RedditFetchFailed as exc:
+            print("  skip %s r/%s: %s" % (src.get("name"), sub, exc),
+                  file=sys.stderr)
     return out
-
 
 def fetch_anthropic(src):
     """Anthropic has no RSS; its /news page is server-rendered with post slugs in
